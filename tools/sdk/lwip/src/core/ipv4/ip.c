@@ -444,17 +444,23 @@ ip_napt_find(u8_t proto, u32_t addr, u16_t port, u16_t mport, u8_t dest)
   return NULL;
 }
 
+static void ICACHE_FLASH_ATTR
+ip_napt_update(struct napt_table *t)
+{
+  t->last = sys_now();
+  /* move this entry to the top of napt_list */
+  ip_napt_free(t);
+  ip_napt_insert(t);
+}
+
 static u16_t ICACHE_FLASH_ATTR
 ip_napt_add(u8_t proto, u32_t src, u16_t sport, u32_t dest, u16_t dport)
 {
   struct napt_table *t = ip_napt_find(proto, src, sport, 0, 0);
   if (t) {
-    t->last = sys_now();
     t->dest = dest;
     t->dport = dport;
-    /* move this entry to the top of napt_list */
-    ip_napt_free(t);
-    ip_napt_insert(t);
+    ip_napt_update(t);
     return t->mport;
   }
   t = NT(napt_free);
@@ -673,6 +679,7 @@ ip_napt_recv(struct pbuf *p, struct ip_hdr *iphdr, struct netif *inp)
     t = ip_napt_find(IP_PROTO_TCP, iphdr->src.addr, tcphdr->src, tcphdr->dest, 1);
       if (!t)
         return; /* Unknown TCP session; do nothing */
+      ip_napt_update(t);
 
       if (t->sport != tcphdr->dest)
         ip_napt_modify_port_tcp(tcphdr, 1, t->sport);
@@ -704,14 +711,15 @@ ip_napt_recv(struct pbuf *p, struct ip_hdr *iphdr, struct netif *inp)
       return;
     }
     t = ip_napt_find(IP_PROTO_UDP, iphdr->src.addr, udphdr->src, udphdr->dest, 1);
-      if (!t)
-        return; /* Unknown session; do nothing */
+    if (!t)
+      return; /* Unknown session; do nothing */
+    ip_napt_update(t);
 
-      if (t->sport != udphdr->dest)
-        ip_napt_modify_port_udp(udphdr, 1, t->sport);
-      ip_napt_modify_addr_udp(udphdr, &iphdr->dest, t->src);
-      ip_napt_modify_addr(iphdr, &iphdr->dest, t->src);
-      return;
+    if (t->sport != udphdr->dest)
+      ip_napt_modify_port_udp(udphdr, 1, t->sport);
+    ip_napt_modify_addr_udp(udphdr, &iphdr->dest, t->src);
+    ip_napt_modify_addr(iphdr, &iphdr->dest, t->src);
+    return;
   }
 #endif // LWIP_UDP
 }
@@ -773,6 +781,7 @@ ip_napt_forward(struct pbuf *p, struct ip_hdr *iphdr, struct netif *inp, struct 
 #endif
         return ERR_RTE; /* Drop unknown TCP session */
       }
+      ip_napt_update(t);
       mport = t->mport;
       if ((TCPH_FLAGS(tcphdr) & TCP_FIN))
         t->fin2 = 1;
